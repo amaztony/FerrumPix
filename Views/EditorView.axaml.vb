@@ -460,7 +460,7 @@ Namespace Views
 
         Private Shared Sub SelectAnnotationFromCanvas(vm As EditorViewModel, hitIndex As Integer, modifiers As KeyModifiers)
             If vm Is Nothing Then Return
-            If modifiers.HasFlag(KeyModifiers.Control) Then
+            If PlatformShortcutService.HasSelectionModifier(modifiers) Then
                 vm.ToggleAnnotationInSelection(hitIndex)
             Else
                 vm.SelectAnnotationWithGroup(hitIndex)
@@ -769,13 +769,16 @@ Namespace Views
         ''' <summary>Fenster-Tunnel: diese Kürzel müssen auch dann noch greifen, wenn zuvor ein
         ''' Overlay-Dialog den Fokus hatte - die View-Kürzel sind danach tot.</summary>
         Private Sub OnEditorKeyDownTunnel(sender As Object, e As KeyEventArgs)
-            If e.Handled OrElse Not e.KeyModifiers.HasFlag(KeyModifiers.Control) Then Return
+            If e.Handled OrElse Not PlatformShortcutService.HasPrimaryModifier(e.KeyModifiers) Then Return
             Dim vm = TryCast(DataContext, EditorViewModel)
             If vm Is Nothing Then Return
 
             Select Case e.Key
                 Case Key.S
-                    If vm.CanSaveInPlace Then
+                    If PlatformShortcutService.IsMacOS AndAlso
+                       e.KeyModifiers.HasFlag(KeyModifiers.Shift) Then
+                        vm.SaveAsCommand.Execute(Nothing)
+                    ElseIf vm.CanSaveInPlace Then
                         vm.SaveCommand.Execute(Nothing)
                     Else
                         vm.SaveAsCommand.Execute(Nothing)
@@ -4416,29 +4419,50 @@ Namespace Views
             Dim isTextInputFocused = TypeOf e.Source Is TextBox
             Dim isInputControlFocused = IsEditorInputControlFocused(e.Source)
 
-            If e.KeyModifiers.HasFlag(KeyModifiers.Control) Then
+            If PlatformShortcutService.IsUndoShortcut(e.Key, e.KeyModifiers) Then
+                vm.UndoCommand.Execute(Nothing)
+                e.Handled = True
+                Return
+            ElseIf PlatformShortcutService.IsRedoShortcut(e.Key, e.KeyModifiers) Then
+                vm.RedoCommand.Execute(Nothing)
+                e.Handled = True
+                Return
+            End If
+
+            If PlatformShortcutService.HasPrimaryModifier(e.KeyModifiers) Then
                 Select Case e.Key
-                    Case Key.Z
-                        vm.UndoCommand.Execute(Nothing)
-                        e.Handled = True
-                    Case Key.Y
-                        vm.RedoCommand.Execute(Nothing)
-                        e.Handled = True
+                    Case Key.R
+                        If PlatformShortcutService.IsMacOS Then
+                            If e.KeyModifiers.HasFlag(KeyModifiers.Alt) Then
+                                vm.RotateRightCommand.Execute(Nothing)
+                            Else
+                                vm.RotateLeftCommand.Execute(Nothing)
+                            End If
+                            e.Handled = True
+                        End If
+                    Case Key.I
+                        If PlatformShortcutService.IsMacOS AndAlso Not isTextInputFocused Then
+                            vm.ToggleInfoSidebarCommand.Execute(Nothing)
+                            e.Handled = True
+                        End If
                     Case Key.N
                         vm.ShowNewDocumentDialogCommand.Execute(Nothing)
                         e.Handled = True
                     Case Key.S
                         ' Ist Speichern gesperrt (RAW-Datei, oder Immich-Bild ohne "Vorhandene Assets
-                        ' aktualisieren"), soll Strg+S nicht wirkungslos verpuffen, sondern das anbieten,
+                        ' aktualisieren"), soll das Plattformkürzel nicht wirkungslos verpuffen, sondern das anbieten,
                         ' was hier möglich ist: Speichern unter.
-                        If vm.CanSaveInPlace Then
+                        If PlatformShortcutService.IsMacOS AndAlso
+                           e.KeyModifiers.HasFlag(KeyModifiers.Shift) Then
+                            vm.SaveAsCommand.Execute(Nothing)
+                        ElseIf vm.CanSaveInPlace Then
                             vm.SaveCommand.Execute(Nothing)
                         Else
                             vm.SaveAsCommand.Execute(Nothing)
                         End If
                         e.Handled = True
                     Case Key.A
-                        ' Strg+A wählt das ganze Bild aus - aber nur dort, wo eine Auswahl überhaupt etwas
+                        ' Das plattformübliche Alles-auswählen-Kürzel wählt das ganze Bild aus, aber nur dort, wo eine Auswahl überhaupt etwas
                         ' bewirkt (Auswahl-Werkzeug und die Werkzeuge, deren Regler auf die Auswahl wirken).
                         ' In einem Textfeld bleibt es das gewohnte „alles markieren".
                         If Not isTextInputFocused AndAlso IsSelectionScopeTool(vm.CurrentTool) Then
@@ -4446,7 +4470,7 @@ Namespace Views
                             e.Handled = True
                         End If
                     Case Key.D
-                        ' Belegt bleibt „Objekt duplizieren", solange eines markiert ist; sonst hebt Strg+D
+                        ' Belegt bleibt „Objekt duplizieren", solange eines markiert ist; sonst hebt das Kürzel
                         ' die Auswahl auf (wie in den üblichen Bildbearbeitungen).
                         If vm.HasSelectedPanelLayer Then
                             vm.DuplicateSelectedAnnotationCommand.Execute(Nothing)
@@ -4455,6 +4479,37 @@ Namespace Views
                             vm.ClearSelection()
                             e.Handled = True
                         End If
+                    Case Key.G
+                        If Not isTextInputFocused Then
+                            If e.KeyModifiers.HasFlag(KeyModifiers.Shift) Then
+                                If vm.CanUngroupSelectedAnnotations Then
+                                    vm.UngroupSelectedAnnotationsCommand.Execute(Nothing)
+                                    e.Handled = True
+                                End If
+                            ElseIf vm.CanGroupSelectedAnnotations Then
+                                vm.GroupSelectedAnnotationsCommand.Execute(Nothing)
+                                e.Handled = True
+                            End If
+                        End If
+                    Case Key.C
+                        If Not isTextInputFocused AndAlso vm.CurrentTool = EditorTool.Selection AndAlso vm.HasActiveSelection Then
+                            CopySelectionToSystemClipboardAsync(vm)
+                            e.Handled = True
+                        End If
+                    Case Key.V
+                        If Not isTextInputFocused AndAlso vm.CurrentTool = EditorTool.Selection Then
+                            vm.PasteSelectionClipboard()
+                            e.Handled = True
+                        End If
+                End Select
+                If e.Handled Then Return
+            End If
+
+            ' Werkzeug- und Bildbefehle sind FerrumPix-spezifisch. Sie bleiben auf
+            ' macOS bei Control, damit Command+Q/W/R/I usw. ihre üblichen
+            ' System- und Anwendungsbedeutungen behalten.
+            If PlatformShortcutService.HasApplicationModifier(e.KeyModifiers) Then
+                Select Case e.Key
                     Case Key.R
                         ' Strg+R ist überall „Bildgröße": in Galerie und Betrachter der Overlay-Dialog,
                         ' hier das Werkzeug mit seinem Panel. Gedreht wird
@@ -4485,21 +4540,6 @@ Namespace Views
                             vm.CurrentTool = EditorTool.Draw
                             e.Handled = True
                         End If
-                    Case Key.G
-                        ' Strg+G gehört ALLEIN dem Gruppieren, Strg+Umschalt+G dem Aufheben. Eine
-                        ' Doppelbelegung derselben Taste wäre nicht vorhersagbar
-                        '; das Objekt-Werkzeug liegt dafür jetzt auf Strg+M.
-                        If Not isTextInputFocused Then
-                            If e.KeyModifiers.HasFlag(KeyModifiers.Shift) Then
-                                If vm.CanUngroupSelectedAnnotations Then
-                                    vm.UngroupSelectedAnnotationsCommand.Execute(Nothing)
-                                    e.Handled = True
-                                End If
-                            ElseIf vm.CanGroupSelectedAnnotations Then
-                                vm.GroupSelectedAnnotationsCommand.Execute(Nothing)
-                                e.Handled = True
-                            End If
-                        End If
                     Case Key.M
                         ' „Werkzeug: Einfügen" (Objekte platzieren) - vorher auf Strg+G, das jetzt dem
                         ' Gruppieren gehört.
@@ -4527,19 +4567,16 @@ Namespace Views
                             vm.IsEraserMode = Not vm.IsEraserMode
                             e.Handled = True
                         End If
-                    Case Key.C
-                        If Not isTextInputFocused AndAlso vm.CurrentTool = EditorTool.Selection AndAlso vm.HasActiveSelection Then
-                            CopySelectionToSystemClipboardAsync(vm)
-                            e.Handled = True
-                        End If
-                    Case Key.V
-                        If Not isTextInputFocused AndAlso vm.CurrentTool = EditorTool.Selection Then
-                            vm.PasteSelectionClipboard()
-                            e.Handled = True
-                        End If
                 End Select
-            Else
-                Select Case e.Key
+                If e.Handled Then Return
+            End If
+
+            ' Ein nicht behandeltes Command/Control-Kürzel darf nicht zusätzlich
+            ' als nackte Pfeil- oder Löschtaste wirken.
+            If e.KeyModifiers.HasFlag(KeyModifiers.Meta) OrElse
+               e.KeyModifiers.HasFlag(KeyModifiers.Control) Then Return
+
+            Select Case e.Key
                     Case Key.Left
                         If vm.HasSelectedAnnotation AndAlso Not isInputControlFocused Then
                             vm.NudgeSelectedAnnotation(-If(e.KeyModifiers.HasFlag(KeyModifiers.Shift), 5.0, 1.0), 0)
@@ -4561,16 +4598,7 @@ Namespace Views
                             e.Handled = True
                         End If
                     Case Key.Delete
-                        If vm.HasSelectedPanelLayer Then
-                            vm.DeleteSelectedAnnotationCommand.Execute(Nothing)
-                        ElseIf vm.HasActiveSelection Then
-                            ' Eine aktive Pixelauswahl ist ein Bildbearbeitungskontext. Entf darf hier
-                            ' niemals als Fallback die aktuelle Bilddatei löschen; bis ein eigener
-                            ' maskierter Pixel-Erase-Commit existiert, hebt es sicher die Auswahl auf.
-                            vm.ClearSelection()
-                        Else
-                            vm.DeleteCurrentCommand.Execute(Nothing)
-                        End If
+                        HandleDeleteShortcut(vm)
                         e.Handled = True
                     Case Key.Escape
                         If vm.IsPickingColorFromImage Then
@@ -4606,7 +4634,19 @@ Namespace Views
                             AdjustActiveToolSize(vm, 1)
                             e.Handled = True
                         End If
-                End Select
+            End Select
+        End Sub
+
+        Private Shared Sub HandleDeleteShortcut(vm As EditorViewModel)
+            If vm.HasSelectedPanelLayer Then
+                vm.DeleteSelectedAnnotationCommand.Execute(Nothing)
+            ElseIf vm.HasActiveSelection Then
+                ' Eine aktive Pixelauswahl ist ein Bildbearbeitungskontext. Löschen darf hier
+                ' niemals als Fallback die aktuelle Bilddatei löschen; bis ein eigener
+                ' maskierter Pixel-Erase-Commit existiert, hebt es sicher die Auswahl auf.
+                vm.ClearSelection()
+            Else
+                vm.DeleteCurrentCommand.Execute(Nothing)
             End If
         End Sub
 

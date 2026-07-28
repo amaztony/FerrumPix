@@ -238,6 +238,16 @@ dotnet build FerrumPix.sln
 dotnet run --project FerrumPix.vbproj
 ```
 
+To create a self-contained macOS application bundle with the Finder and Dock
+icon configured:
+
+```bash
+scripts/macos/package-app.sh arm64
+```
+
+Use `x64` instead of `arm64` for Intel Macs. The application bundle is written
+to `artifacts/macos-<architecture>/FerrumPix.app`.
+
 ## License
 
 [GPL-3.0](LICENSE)
